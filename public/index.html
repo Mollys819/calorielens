@@ -13,8 +13,79 @@
           <p class="eyebrow">拍照估算食物热量</p>
           <h1>CalorieLens</h1>
         </div>
-        <div class="api-state" id="apiState">检测服务中</div>
+
+        <section class="auth-panel" aria-label="账号">
+          <form class="auth-form" id="authForm">
+            <input id="usernameInput" name="username" autocomplete="username" placeholder="用户名" />
+            <input id="passwordInput" name="password" type="password" autocomplete="current-password" placeholder="密码" />
+            <button id="loginButton" type="submit">
+              <i data-lucide="log-in"></i>
+              登录
+            </button>
+            <button id="registerButton" class="ghost-button" type="button">
+              注册
+            </button>
+          </form>
+          <div class="user-panel" id="userPanel" hidden>
+            <span id="currentUserName">未登录</span>
+            <button class="ghost-button" id="logoutButton" type="button">
+              <i data-lucide="log-out"></i>
+              退出
+            </button>
+          </div>
+          <div class="api-state" id="apiState">检测服务中</div>
+        </section>
       </header>
+
+      <section class="account-grid" id="accountGrid" hidden>
+        <section class="settings-panel" aria-labelledby="settingsTitle">
+          <div class="section-heading compact">
+            <div>
+              <p class="eyebrow">个人目标</p>
+              <h2 id="settingsTitle">体重与热量</h2>
+            </div>
+            <button class="primary-button compact-button" id="saveSettingsButton" type="button">
+              <i data-lucide="save"></i>
+              保存
+            </button>
+          </div>
+          <div class="field-grid">
+            <label>
+              <span>体重 kg</span>
+              <input id="weightInput" type="number" min="20" max="350" step="0.1" />
+            </label>
+            <label>
+              <span>每日目标 kcal</span>
+              <input id="targetInput" type="number" min="500" max="6000" step="50" />
+            </label>
+          </div>
+        </section>
+
+        <section class="day-panel" aria-labelledby="dayTitle">
+          <div class="section-heading compact">
+            <div>
+              <p class="eyebrow">每日记录</p>
+              <h2 id="dayTitle">今日进度</h2>
+            </div>
+            <input id="recordDate" type="date" />
+          </div>
+          <div class="goal-row">
+            <div>
+              <span>已记录</span>
+              <strong id="dayCalories">0 kcal</strong>
+            </div>
+            <div>
+              <span>目标</span>
+              <strong id="dayTarget">-- kcal</strong>
+            </div>
+            <div>
+              <span>剩余</span>
+              <strong id="dayRemaining">-- kcal</strong>
+            </div>
+          </div>
+          <div class="goal-track"><div class="goal-fill" id="goalFill"></div></div>
+        </section>
+      </section>
 
       <section class="workspace" aria-label="食物热量识别工作区">
         <section class="capture-panel" aria-labelledby="captureTitle">
@@ -27,6 +98,13 @@
               <i data-lucide="rotate-ccw"></i>
               重置
             </button>
+          </div>
+
+          <div class="meal-type-control" aria-label="餐别">
+            <label><input type="radio" name="mealType" value="breakfast" /> 早餐</label>
+            <label><input type="radio" name="mealType" value="lunch" checked /> 午餐</label>
+            <label><input type="radio" name="mealType" value="dinner" /> 晚餐</label>
+            <label><input type="radio" name="mealType" value="snack" /> 加餐</label>
           </div>
 
           <div class="preview-frame" id="dropZone">
@@ -58,7 +136,7 @@
             <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp" capture="environment" hidden />
             <button id="analyzeButton" class="primary-button" type="button" disabled>
               <i data-lucide="sparkles"></i>
-              分析热量
+              分析并记录
             </button>
           </div>
 
@@ -129,16 +207,17 @@
       <section class="history-section" aria-labelledby="historyTitle">
         <div class="section-heading compact">
           <div>
-            <p class="eyebrow">本机记录</p>
-            <h2 id="historyTitle">最近分析</h2>
+            <p class="eyebrow">云端记录</p>
+            <h2 id="historyTitle">每日餐食</h2>
           </div>
-          <button class="ghost-button" id="clearHistoryButton" type="button">
-            <i data-lucide="trash-2"></i>
-            清空
+          <button class="ghost-button" id="refreshMealsButton" type="button">
+            <i data-lucide="refresh-cw"></i>
+            刷新
           </button>
         </div>
+        <div class="meal-breakdown" id="mealBreakdown" hidden></div>
         <div class="history-list" id="historyList">
-          <p class="empty-copy">还没有分析记录。</p>
+          <p class="empty-copy">登录后会显示每日记录。</p>
         </div>
       </section>
     </main>

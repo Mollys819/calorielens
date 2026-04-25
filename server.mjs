@@ -1,12 +1,15 @@
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import crypto from "node:crypto";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "public");
 const PORT = Number(process.env.PORT || 5173);
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
+const DATA_FILE = path.join(DATA_DIR, "app-db.json");
 const AI_PROVIDER = normalizeProvider(
   process.env.AI_PROVIDER || (process.env.SILICONFLOW_API_KEY ? "siliconflow" : "openai"),
 );
@@ -21,6 +24,7 @@ const ACTIVE_API_KEY = AI_PROVIDER === "siliconflow" ? SILICONFLOW_API_KEY : OPE
 const ACTIVE_MODEL = AI_PROVIDER === "siliconflow" ? SILICONFLOW_MODEL : OPENAI_MODEL;
 const ACTIVE_PROVIDER_LABEL = AI_PROVIDER === "siliconflow" ? "SiliconFlow" : "OpenAI";
 const MAX_BODY_BYTES = 12 * 1024 * 1024;
+const TOKEN_BYTES = 32;
 
 const mimeTypes = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -130,6 +134,39 @@ const server = createServer(async (req, res) => {
       return handleAnalyze(req, res);
     }
 
+    if (req.method === "POST" && url.pathname === "/api/auth/register") {
+      return handleRegister(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/auth/login") {
+      return handleLogin(req, res);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/auth/logout") {
+      return handleLogout(req, res);
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/me") {
+      return handleMe(req, res);
+    }
+
+    if (req.method === "PUT" && url.pathname === "/api/settings") {
+      return handleSettings(req, res);
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/meals") {
+      return handleGetMeals(req, res, url);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/meals") {
+      return handleCreateMeal(req, res);
+    }
+
+    const mealDeleteMatch = url.pathname.match(/^\/api\/meals\/([^/]+)$/);
+    if (req.method === "DELETE" && mealDeleteMatch) {
+      return handleDeleteMeal(req, res, mealDeleteMatch[1]);
+    }
+
     if (req.method !== "GET" && req.method !== "HEAD") {
       return sendJson(res, 405, { error: "Method not allowed" });
     }
@@ -187,6 +224,174 @@ async function handleAnalyze(req, res) {
       detail: error.message,
     });
   }
+}
+
+async function handleRegister(req, res) {
+  const payload = await readJsonBodySafe(req, res);
+  if (!payload) return;
+
+  const username = normalizeUsername(payload.username);
+  const password = typeof payload.password === "string" ? payload.password : "";
+  if (!username || password.length < 6) {
+    return sendJson(res, 400, { error: "用户名不能为空，密码至少 6 位。" });
+  }
+
+  const db = await readDb();
+  if (db.users.some((user) => user.username.toLowerCase() === username.toLowerCase())) {
+    return sendJson(res, 409, { error: "这个用户名已经存在。" });
+  }
+
+  const passwordRecord = await hashPassword(password);
+  const user = {
+    id: crypto.randomUUID(),
+    username,
+    passwordHash: passwordRecord.hash,
+    passwordSalt: passwordRecord.salt,
+    createdAt: new Date().toISOString(),
+    settings: {
+      weightKg: 65,
+      targetCalories: 1800,
+    },
+  };
+  const session = createSession(user.id);
+  db.users.push(user);
+  db.sessions.push(session);
+  await writeDb(db);
+
+  return sendJson(res, 201, {
+    token: session.token,
+    user: publicUser(user),
+  });
+}
+
+async function handleLogin(req, res) {
+  const payload = await readJsonBodySafe(req, res);
+  if (!payload) return;
+
+  const username = normalizeUsername(payload.username);
+  const password = typeof payload.password === "string" ? payload.password : "";
+  const db = await readDb();
+  const user = db.users.find((item) => item.username.toLowerCase() === username.toLowerCase());
+
+  if (!user || !(await verifyPassword(password, user.passwordSalt, user.passwordHash))) {
+    return sendJson(res, 401, { error: "用户名或密码不正确。" });
+  }
+
+  const session = createSession(user.id);
+  db.sessions = db.sessions.filter((item) => item.userId !== user.id || !isExpiredSession(item));
+  db.sessions.push(session);
+  await writeDb(db);
+
+  return sendJson(res, 200, {
+    token: session.token,
+    user: publicUser(user),
+  });
+}
+
+async function handleLogout(req, res) {
+  const token = getBearerToken(req);
+  if (!token) {
+    return sendJson(res, 200, { ok: true });
+  }
+
+  const db = await readDb();
+  db.sessions = db.sessions.filter((session) => session.token !== token);
+  await writeDb(db);
+  return sendJson(res, 200, { ok: true });
+}
+
+async function handleMe(req, res) {
+  const auth = await requireAuth(req, res);
+  if (!auth) return;
+  return sendJson(res, 200, { user: publicUser(auth.user) });
+}
+
+async function handleSettings(req, res) {
+  const auth = await requireAuth(req, res);
+  if (!auth) return;
+
+  const payload = await readJsonBodySafe(req, res);
+  if (!payload) return;
+
+  const weightKg = clamp(numberOrZero(payload.weightKg), 20, 350);
+  const targetCalories = clamp(numberOrZero(payload.targetCalories), 500, 6000);
+  if (!weightKg || !targetCalories) {
+    return sendJson(res, 400, { error: "请输入有效的体重和目标热量。" });
+  }
+
+  auth.user.settings = {
+    weightKg: roundNumber(weightKg, 1),
+    targetCalories: Math.round(targetCalories),
+  };
+  await writeDb(auth.db);
+  return sendJson(res, 200, { user: publicUser(auth.user) });
+}
+
+async function handleGetMeals(req, res, url) {
+  const auth = await requireAuth(req, res);
+  if (!auth) return;
+
+  const date = sanitizeDate(url.searchParams.get("date")) || todayDate();
+  const meals = auth.db.meals
+    .filter((meal) => meal.userId === auth.user.id && meal.date === date)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return sendJson(res, 200, {
+    date,
+    summary: summarizeMeals(meals, auth.user.settings),
+    meals,
+  });
+}
+
+async function handleCreateMeal(req, res) {
+  const auth = await requireAuth(req, res);
+  if (!auth) return;
+
+  const payload = await readJsonBodySafe(req, res);
+  if (!payload) return;
+
+  const analysis = normalizeAnalysis(payload.analysis || {});
+  const mealType = normalizeMealType(payload.mealType);
+  const date = sanitizeDate(payload.date) || todayDate();
+  const thumbnail = sanitizeThumbnail(payload.thumbnail);
+  const notes = typeof payload.notes === "string" ? payload.notes.slice(0, 500) : "";
+  const source = typeof payload.source === "string" ? payload.source.slice(0, 40) : "unknown";
+
+  const meal = {
+    id: crypto.randomUUID(),
+    userId: auth.user.id,
+    date,
+    mealType,
+    createdAt: new Date().toISOString(),
+    source,
+    notes,
+    thumbnail,
+    dishName: analysis.dish_name,
+    totalCalories: analysis.total_calories,
+    calorieRange: analysis.calorie_range,
+    macros: analysis.macros,
+    analysis,
+  };
+
+  auth.db.meals.push(meal);
+  await writeDb(auth.db);
+  return sendJson(res, 201, { meal, summary: summarizeMealsForDate(auth.db, auth.user, date) });
+}
+
+async function handleDeleteMeal(req, res, mealId) {
+  const auth = await requireAuth(req, res);
+  if (!auth) return;
+
+  const existing = auth.db.meals.find((meal) => meal.id === mealId && meal.userId === auth.user.id);
+  if (!existing) {
+    return sendJson(res, 404, { error: "记录不存在。" });
+  }
+
+  auth.db.meals = auth.db.meals.filter((meal) => meal.id !== mealId);
+  await writeDb(auth.db);
+  return sendJson(res, 200, {
+    ok: true,
+    summary: summarizeMealsForDate(auth.db, auth.user, existing.date),
+  });
 }
 
 async function analyzeFoodImage(imageDataUrl, notes) {
@@ -426,6 +631,65 @@ function readJsonBody(req) {
   });
 }
 
+async function readJsonBodySafe(req, res) {
+  try {
+    return await readJsonBody(req);
+  } catch (error) {
+    const status = error.code === "BODY_TOO_LARGE" ? 413 : 400;
+    sendJson(res, status, { error: error.message });
+    return null;
+  }
+}
+
+async function readDb() {
+  await mkdir(DATA_DIR, { recursive: true });
+  if (!existsSync(DATA_FILE)) {
+    return { users: [], sessions: [], meals: [] };
+  }
+
+  try {
+    const raw = await readFile(DATA_FILE, "utf8");
+    const db = JSON.parse(raw);
+    return {
+      users: Array.isArray(db.users) ? db.users : [],
+      sessions: Array.isArray(db.sessions) ? db.sessions : [],
+      meals: Array.isArray(db.meals) ? db.meals : [],
+    };
+  } catch {
+    return { users: [], sessions: [], meals: [] };
+  }
+}
+
+async function writeDb(db) {
+  await mkdir(DATA_DIR, { recursive: true });
+  await writeFile(DATA_FILE, JSON.stringify(db, null, 2), "utf8");
+}
+
+async function requireAuth(req, res) {
+  const token = getBearerToken(req);
+  if (!token) {
+    sendJson(res, 401, { error: "请先登录。" });
+    return null;
+  }
+
+  const db = await readDb();
+  const session = db.sessions.find((item) => item.token === token);
+  if (!session || isExpiredSession(session)) {
+    db.sessions = db.sessions.filter((item) => item.token !== token);
+    await writeDb(db);
+    sendJson(res, 401, { error: "登录已过期，请重新登录。" });
+    return null;
+  }
+
+  const user = db.users.find((item) => item.id === session.userId);
+  if (!user) {
+    sendJson(res, 401, { error: "账号不存在。" });
+    return null;
+  }
+
+  return { db, user, session };
+}
+
 function createDemoAnalysis(notes) {
   return {
     dish_name: "演示：鸡蛋牛肉米饭餐盘",
@@ -523,6 +787,41 @@ function normalizeAnalysis(input) {
   };
 }
 
+function summarizeMealsForDate(db, user, date) {
+  const meals = db.meals.filter((meal) => meal.userId === user.id && meal.date === date);
+  return summarizeMeals(meals, user.settings);
+}
+
+function summarizeMeals(meals, settings = {}) {
+  const totalCalories = meals.reduce((sum, meal) => sum + numberOrZero(meal.totalCalories), 0);
+  const macros = meals.reduce(
+    (sum, meal) => ({
+      protein_g: sum.protein_g + numberOrZero(meal.macros?.protein_g),
+      carbs_g: sum.carbs_g + numberOrZero(meal.macros?.carbs_g),
+      fat_g: sum.fat_g + numberOrZero(meal.macros?.fat_g),
+    }),
+    { protein_g: 0, carbs_g: 0, fat_g: 0 },
+  );
+  const byMealType = { breakfast: 0, lunch: 0, dinner: 0, snack: 0 };
+  for (const meal of meals) {
+    byMealType[normalizeMealType(meal.mealType)] += numberOrZero(meal.totalCalories);
+  }
+
+  const targetCalories = numberOrZero(settings.targetCalories) || 1800;
+  return {
+    totalCalories: Math.round(totalCalories),
+    targetCalories,
+    remainingCalories: Math.round(targetCalories - totalCalories),
+    progress: clamp(totalCalories / targetCalories, 0, 1.5),
+    macros: {
+      protein_g: roundNumber(macros.protein_g, 1),
+      carbs_g: roundNumber(macros.carbs_g, 1),
+      fat_g: roundNumber(macros.fat_g, 1),
+    },
+    byMealType,
+  };
+}
+
 function sendJson(res, status, payload) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
@@ -536,8 +835,93 @@ function normalizeProvider(value) {
   return provider === "siliconflow" ? "siliconflow" : "openai";
 }
 
+function normalizeMealType(value) {
+  const mealType = String(value || "").trim().toLowerCase();
+  return ["breakfast", "lunch", "dinner", "snack"].includes(mealType) ? mealType : "lunch";
+}
+
+function sanitizeDate(value) {
+  const date = String(value || "").trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : "";
+}
+
+function sanitizeThumbnail(value) {
+  const thumbnail = typeof value === "string" ? value : "";
+  return /^data:image\/(png|jpe?g|webp);base64,/i.test(thumbnail) ? thumbnail.slice(0, 900000) : "";
+}
+
+function normalizeUsername(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, "_")
+    .slice(0, 40);
+}
+
 function getProviderKeyName() {
   return AI_PROVIDER === "siliconflow" ? "SILICONFLOW_API_KEY" : "OPENAI_API_KEY";
+}
+
+function getBearerToken(req) {
+  const header = req.headers.authorization || "";
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1].trim() : "";
+}
+
+function createSession(userId) {
+  const now = Date.now();
+  return {
+    token: crypto.randomBytes(TOKEN_BYTES).toString("base64url"),
+    userId,
+    createdAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + 1000 * 60 * 60 * 24 * 30).toISOString(),
+  };
+}
+
+function isExpiredSession(session) {
+  return Date.parse(session.expiresAt) < Date.now();
+}
+
+function publicUser(user) {
+  return {
+    id: user.id,
+    username: user.username,
+    createdAt: user.createdAt,
+    settings: {
+      weightKg: numberOrZero(user.settings?.weightKg) || 65,
+      targetCalories: numberOrZero(user.settings?.targetCalories) || 1800,
+    },
+  };
+}
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(password, salt, 64, (error, derivedKey) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve({ salt, hash: derivedKey.toString("hex") });
+    });
+  });
+}
+
+function verifyPassword(password, salt, expectedHash) {
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(password, salt, 64, (error, derivedKey) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      const actual = Buffer.from(derivedKey.toString("hex"), "hex");
+      const expected = Buffer.from(expectedHash, "hex");
+      resolve(actual.length === expected.length && crypto.timingSafeEqual(actual, expected));
+    });
+  });
+}
+
+function todayDate() {
+  return new Date().toISOString().slice(0, 10);
 }
 
 function numberOrZero(value) {
@@ -557,4 +941,9 @@ function stringArrayOr(value) {
   return Array.isArray(value)
     ? value.filter((item) => typeof item === "string")
     : [];
+}
+
+function roundNumber(value, digits = 0) {
+  const factor = 10 ** digits;
+  return Math.round((Number(value) || 0) * factor) / factor;
 }

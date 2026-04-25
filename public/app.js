@@ -1,5 +1,23 @@
 const els = {
   apiState: document.querySelector("#apiState"),
+  authForm: document.querySelector("#authForm"),
+  usernameInput: document.querySelector("#usernameInput"),
+  passwordInput: document.querySelector("#passwordInput"),
+  loginButton: document.querySelector("#loginButton"),
+  registerButton: document.querySelector("#registerButton"),
+  userPanel: document.querySelector("#userPanel"),
+  currentUserName: document.querySelector("#currentUserName"),
+  logoutButton: document.querySelector("#logoutButton"),
+  accountGrid: document.querySelector("#accountGrid"),
+  weightInput: document.querySelector("#weightInput"),
+  targetInput: document.querySelector("#targetInput"),
+  saveSettingsButton: document.querySelector("#saveSettingsButton"),
+  recordDate: document.querySelector("#recordDate"),
+  dayCalories: document.querySelector("#dayCalories"),
+  dayTarget: document.querySelector("#dayTarget"),
+  dayRemaining: document.querySelector("#dayRemaining"),
+  goalFill: document.querySelector("#goalFill"),
+  mealBreakdown: document.querySelector("#mealBreakdown"),
   cameraButton: document.querySelector("#cameraButton"),
   captureButton: document.querySelector("#captureButton"),
   clearButton: document.querySelector("#clearButton"),
@@ -28,15 +46,22 @@ const els = {
   portionSummary: document.querySelector("#portionSummary"),
   assumptionsList: document.querySelector("#assumptionsList"),
   historyList: document.querySelector("#historyList"),
-  clearHistoryButton: document.querySelector("#clearHistoryButton"),
+  refreshMealsButton: document.querySelector("#refreshMealsButton"),
 };
 
-const HISTORY_KEY = "calorieLens.history.v1";
+const TOKEN_KEY = "calorieLens.authToken.v1";
+const MEAL_LABELS = {
+  breakfast: "早餐",
+  lunch: "午餐",
+  dinner: "晚餐",
+  snack: "加餐",
+};
 
 let cameraStream = null;
 let currentImage = "";
 let currentAnalysis = null;
 let currentSource = "";
+let currentUser = null;
 let multiplier = 1;
 
 boot();
@@ -46,12 +71,22 @@ function boot() {
     window.lucide.createIcons();
   }
 
-  checkHealth();
+  els.recordDate.value = localDateString();
   bindEvents();
-  renderHistory();
+  checkHealth();
+  restoreSession();
 }
 
 function bindEvents() {
+  els.authForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    login();
+  });
+  els.registerButton.addEventListener("click", register);
+  els.logoutButton.addEventListener("click", logout);
+  els.saveSettingsButton.addEventListener("click", saveSettings);
+  els.recordDate.addEventListener("change", loadMeals);
+  els.refreshMealsButton.addEventListener("click", loadMeals);
   els.cameraButton.addEventListener("click", startCamera);
   els.captureButton.addEventListener("click", capturePhoto);
   els.clearButton.addEventListener("click", resetCapture);
@@ -88,11 +123,6 @@ function bindEvents() {
       renderAnalysis(currentAnalysis, currentSource);
     }
   });
-
-  els.clearHistoryButton.addEventListener("click", () => {
-    localStorage.removeItem(HISTORY_KEY);
-    renderHistory();
-  });
 }
 
 async function checkHealth() {
@@ -107,6 +137,130 @@ async function checkHealth() {
       : `演示模式：未配置 ${providerName} API key`;
   } catch {
     els.apiState.textContent = "服务不可用";
+  }
+}
+
+async function restoreSession() {
+  const token = localStorage.getItem(TOKEN_KEY);
+  if (!token) {
+    renderAuthState();
+    renderEmptyMeals("登录后会显示每日记录。");
+    return;
+  }
+
+  try {
+    const data = await apiFetch("/api/me");
+    currentUser = data.user;
+    renderAuthState();
+    await loadMeals();
+  } catch {
+    localStorage.removeItem(TOKEN_KEY);
+    currentUser = null;
+    renderAuthState();
+    renderEmptyMeals("登录后会显示每日记录。");
+  }
+}
+
+async function login() {
+  await submitAuth("/api/auth/login");
+}
+
+async function register() {
+  await submitAuth("/api/auth/register");
+}
+
+async function submitAuth(path) {
+  const username = els.usernameInput.value.trim();
+  const password = els.passwordInput.value;
+  if (!username || password.length < 6) {
+    setStatus("请输入用户名和至少 6 位密码。", "error");
+    return;
+  }
+
+  try {
+    const data = await apiFetch(path, {
+      method: "POST",
+      body: { username, password },
+      skipAuth: true,
+    });
+    localStorage.setItem(TOKEN_KEY, data.token);
+    currentUser = data.user;
+    els.passwordInput.value = "";
+    renderAuthState();
+    await loadMeals();
+    setStatus("账号已登录。");
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+}
+
+async function logout() {
+  try {
+    await apiFetch("/api/auth/logout", { method: "POST" });
+  } catch {
+    // Logout should still clear local state if the server token is already stale.
+  }
+
+  localStorage.removeItem(TOKEN_KEY);
+  currentUser = null;
+  renderAuthState();
+  renderEmptyMeals("登录后会显示每日记录。");
+  setStatus("已退出登录。");
+}
+
+function renderAuthState() {
+  const isLoggedIn = Boolean(currentUser);
+  els.authForm.hidden = isLoggedIn;
+  els.userPanel.hidden = !isLoggedIn;
+  els.accountGrid.hidden = !isLoggedIn;
+
+  if (!isLoggedIn) {
+    els.currentUserName.textContent = "未登录";
+    return;
+  }
+
+  els.currentUserName.textContent = currentUser.username;
+  els.weightInput.value = currentUser.settings.weightKg;
+  els.targetInput.value = currentUser.settings.targetCalories;
+  els.dayTarget.textContent = `${formatNumber(currentUser.settings.targetCalories)} kcal`;
+}
+
+async function saveSettings() {
+  if (!currentUser) {
+    setStatus("请先登录。", "error");
+    return;
+  }
+
+  try {
+    const data = await apiFetch("/api/settings", {
+      method: "PUT",
+      body: {
+        weightKg: Number(els.weightInput.value),
+        targetCalories: Number(els.targetInput.value),
+      },
+    });
+    currentUser = data.user;
+    renderAuthState();
+    await loadMeals();
+    setStatus("目标已保存。");
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+}
+
+async function loadMeals() {
+  if (!currentUser) {
+    renderEmptyMeals("登录后会显示每日记录。");
+    return;
+  }
+
+  try {
+    const date = els.recordDate.value || localDateString();
+    const data = await apiFetch(`/api/meals?date=${encodeURIComponent(date)}`);
+    renderDailySummary(data.summary);
+    renderMeals(data.meals);
+  } catch (error) {
+    setStatus(error.message, "error");
   }
 }
 
@@ -204,14 +358,36 @@ async function analyzeCurrentImage() {
     els.multiplierValue.textContent = "1.0x";
     els.portionMultiplier.disabled = false;
     renderAnalysis(currentAnalysis, currentSource);
-    await saveHistory(currentAnalysis);
-    setStatus(currentSource === "demo" ? "已显示演示结果。配置 API key 后可识别真实照片。" : "分析完成。");
+
+    if (currentUser) {
+      await saveMealRecord(currentAnalysis);
+      await loadMeals();
+      setStatus(currentSource === "demo" ? "已记录演示结果。" : "分析完成，已加入每日记录。");
+    } else {
+      setStatus("分析完成。登录后可保存到每日记录。");
+    }
+
     checkHealth();
   } catch (error) {
     setStatus(error.message, "error");
   } finally {
     els.analyzeButton.disabled = false;
   }
+}
+
+async function saveMealRecord(analysis) {
+  const thumbnail = await createThumbnail(currentImage);
+  await apiFetch("/api/meals", {
+    method: "POST",
+    body: {
+      date: els.recordDate.value || localDateString(),
+      mealType: getSelectedMealType(),
+      notes: els.mealNotes.value.trim(),
+      source: currentSource,
+      thumbnail,
+      analysis,
+    },
+  });
 }
 
 function renderAnalysis(analysis, source) {
@@ -321,6 +497,85 @@ function renderAssumptions(analysis) {
   els.assumptionsList.innerHTML = assumptions.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
 }
 
+function renderDailySummary(summary = {}) {
+  const total = summary.totalCalories || 0;
+  const target = summary.targetCalories || currentUser?.settings?.targetCalories || 0;
+  const remaining = summary.remainingCalories ?? target - total;
+  const percent = Math.min(100, Math.round((summary.progress || 0) * 100));
+  els.dayCalories.textContent = `${formatNumber(total)} kcal`;
+  els.dayTarget.textContent = `${formatNumber(target)} kcal`;
+  els.dayRemaining.textContent = `${formatNumber(remaining)} kcal`;
+  els.goalFill.style.width = `${percent}%`;
+
+  const byMealType = summary.byMealType || {};
+  els.mealBreakdown.hidden = false;
+  els.mealBreakdown.innerHTML = Object.entries(MEAL_LABELS)
+    .map(([key, label]) => `<span>${label}<strong>${formatNumber(byMealType[key] || 0)} kcal</strong></span>`)
+    .join("");
+}
+
+function renderMeals(meals = []) {
+  if (!currentUser) {
+    renderEmptyMeals("登录后会显示每日记录。");
+    return;
+  }
+
+  if (!meals.length) {
+    els.historyList.innerHTML = '<p class="empty-copy">这一天还没有记录。</p>';
+    return;
+  }
+
+  els.historyList.innerHTML = meals
+    .map(
+      (meal) => `
+        <article class="history-item meal-record">
+          ${meal.thumbnail ? `<img src="${meal.thumbnail}" alt="${escapeHtml(meal.dishName || "餐食照片")}" />` : ""}
+          <div class="history-meta">
+            <span class="meal-label">${MEAL_LABELS[meal.mealType] || "餐食"}</span>
+            <strong>${escapeHtml(meal.dishName || "餐食")}</strong>
+            <span>${formatNumber(meal.totalCalories)} kcal · ${formatDate(meal.createdAt)}</span>
+            <span>蛋白 ${formatNumber(meal.macros?.protein_g, 1)}g / 碳水 ${formatNumber(meal.macros?.carbs_g, 1)}g / 脂肪 ${formatNumber(
+              meal.macros?.fat_g,
+              1,
+            )}g</span>
+            <button class="ghost-button delete-meal-button" type="button" data-id="${meal.id}">
+              <i data-lucide="trash-2"></i>
+              删除
+            </button>
+          </div>
+        </article>
+      `,
+    )
+    .join("");
+
+  els.historyList.querySelectorAll(".delete-meal-button").forEach((button) => {
+    button.addEventListener("click", () => deleteMeal(button.dataset.id));
+  });
+
+  if (window.lucide) {
+    window.lucide.createIcons();
+  }
+}
+
+function renderEmptyMeals(message) {
+  els.dayCalories.textContent = "0 kcal";
+  els.dayTarget.textContent = currentUser ? `${formatNumber(currentUser.settings.targetCalories)} kcal` : "-- kcal";
+  els.dayRemaining.textContent = currentUser ? `${formatNumber(currentUser.settings.targetCalories)} kcal` : "-- kcal";
+  els.goalFill.style.width = "0";
+  els.mealBreakdown.hidden = true;
+  els.historyList.innerHTML = `<p class="empty-copy">${escapeHtml(message)}</p>`;
+}
+
+async function deleteMeal(id) {
+  try {
+    await apiFetch(`/api/meals/${encodeURIComponent(id)}`, { method: "DELETE" });
+    await loadMeals();
+    setStatus("记录已删除。");
+  } catch (error) {
+    setStatus(error.message, "error");
+  }
+}
+
 function resetCapture() {
   stopCamera();
   currentImage = "";
@@ -420,77 +675,6 @@ function resizeFileToDataUrl(file) {
   });
 }
 
-async function saveHistory(analysis) {
-  try {
-    const history = readHistory();
-    const thumbnail = await createThumbnail(currentImage);
-    history.unshift({
-      id: crypto.randomUUID(),
-      createdAt: new Date().toISOString(),
-      source: currentSource,
-      thumbnail,
-      analysis,
-    });
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(0, 5)));
-    renderHistory();
-  } catch {
-    setStatus("分析完成，但本地历史记录空间不足，未保存缩略图。");
-  }
-}
-
-function renderHistory() {
-  const history = readHistory();
-  if (!history.length) {
-    els.historyList.innerHTML = '<p class="empty-copy">还没有分析记录。</p>';
-    return;
-  }
-
-  els.historyList.innerHTML = history
-    .map(
-      (entry) => `
-        <button class="history-item" type="button" data-id="${entry.id}">
-          <img src="${entry.thumbnail}" alt="${escapeHtml(entry.analysis.dish_name || "餐食照片")}" />
-          <span class="history-meta">
-            <strong>${escapeHtml(entry.analysis.dish_name || "餐食")}</strong>
-            <span>${formatNumber(entry.analysis.total_calories)} kcal · ${formatDate(entry.createdAt)}</span>
-          </span>
-        </button>
-      `,
-    )
-    .join("");
-
-  els.historyList.querySelectorAll(".history-item").forEach((button) => {
-    button.addEventListener("click", () => {
-      const entry = history.find((item) => item.id === button.dataset.id);
-      if (!entry) {
-        return;
-      }
-      currentAnalysis = entry.analysis;
-      currentSource = entry.source;
-      currentImage = entry.thumbnail;
-      els.previewImage.src = entry.thumbnail;
-      showImage();
-      els.analyzeButton.disabled = false;
-      els.portionMultiplier.disabled = false;
-      multiplier = 1;
-      els.portionMultiplier.value = "1";
-      els.multiplierValue.textContent = "1.0x";
-      renderAnalysis(currentAnalysis, currentSource);
-      setStatus("已载入历史记录。");
-    });
-  });
-}
-
-function readHistory() {
-  try {
-    const raw = localStorage.getItem(HISTORY_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
 function createThumbnail(dataUrl) {
   return new Promise((resolve, reject) => {
     const image = new Image();
@@ -506,6 +690,30 @@ function createThumbnail(dataUrl) {
     image.onerror = () => reject(new Error("无法生成缩略图。"));
     image.src = dataUrl;
   });
+}
+
+async function apiFetch(path, options = {}) {
+  const headers = { "Content-Type": "application/json" };
+  const token = localStorage.getItem(TOKEN_KEY);
+  if (token && !options.skipAuth) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const response = await fetch(path, {
+    method: options.method || "GET",
+    headers,
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  });
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data.error || "请求失败");
+  }
+  return data;
+}
+
+function getSelectedMealType() {
+  return document.querySelector('input[name="mealType"]:checked')?.value || "lunch";
 }
 
 function setStatus(message, type = "info") {
@@ -541,6 +749,12 @@ function formatDate(value) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(date);
+}
+
+function localDateString() {
+  const date = new Date();
+  const offset = date.getTimezoneOffset() * 60000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 10);
 }
 
 function round(value, digits = 0) {
