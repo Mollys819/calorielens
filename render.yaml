@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: calorielens
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: AI_PROVIDER
+        value: siliconflow
+      - key: SILICONFLOW_API_KEY
+        sync: false
+      - key: SILICONFLOW_MODEL
+        value: Qwen/Qwen2.5-VL-32B-Instruct
