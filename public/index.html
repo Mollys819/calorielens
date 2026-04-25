@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CalorieLens 食物热量识别</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">拍照估算食物热量</p>
+          <h1>CalorieLens</h1>
+        </div>
+        <div class="api-state" id="apiState">检测服务中</div>
+      </header>
+
+      <section class="workspace" aria-label="食物热量识别工作区">
+        <section class="capture-panel" aria-labelledby="captureTitle">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">输入</p>
+              <h2 id="captureTitle">照片</h2>
+            </div>
+            <button class="ghost-button" id="clearButton" type="button">
+              <i data-lucide="rotate-ccw"></i>
+              重置
+            </button>
+          </div>
+
+          <div class="preview-frame" id="dropZone">
+            <video id="cameraVideo" autoplay muted playsinline hidden></video>
+            <img id="previewImage" alt="待分析的食物照片" hidden />
+            <canvas id="captureCanvas" hidden></canvas>
+            <div class="empty-state" id="emptyState">
+              <div class="empty-mark">
+                <i data-lucide="utensils"></i>
+              </div>
+              <h3>拍一张餐盘照片</h3>
+              <p>尽量让食物完整入镜，避免强反光；如果份量不好判断，可以在下方备注。</p>
+            </div>
+          </div>
+
+          <div class="control-grid">
+            <button id="cameraButton" type="button">
+              <i data-lucide="camera"></i>
+              开启相机
+            </button>
+            <button id="captureButton" type="button" disabled>
+              <i data-lucide="aperture"></i>
+              拍照
+            </button>
+            <label class="file-button" for="fileInput">
+              <i data-lucide="image-up"></i>
+              上传
+            </label>
+            <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp" capture="environment" hidden />
+            <button id="analyzeButton" class="primary-button" type="button" disabled>
+              <i data-lucide="sparkles"></i>
+              分析热量
+            </button>
+          </div>
+
+          <label class="notes-field" for="mealNotes">
+            <span>份量备注</span>
+            <textarea id="mealNotes" rows="3" maxlength="500" placeholder="例如：米饭半碗、酱汁没吃完、鸡腿去皮"></textarea>
+          </label>
+
+          <p class="status-line" id="statusLine" role="status">等待照片。</p>
+        </section>
+
+        <section class="result-panel" aria-labelledby="resultTitle">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">输出</p>
+              <h2 id="resultTitle">估算结果</h2>
+            </div>
+            <div class="confidence" id="confidenceBadge">--</div>
+          </div>
+
+          <div class="result-summary" id="resultSummary">
+            <p class="summary-label">总热量</p>
+            <div class="calorie-number"><span id="totalCalories">--</span><small>kcal</small></div>
+            <p class="summary-range" id="calorieRange">上传照片后显示估算范围</p>
+          </div>
+
+          <div class="portion-adjust">
+            <label for="portionMultiplier">份量修正</label>
+            <input id="portionMultiplier" type="range" min="0.5" max="1.8" step="0.1" value="1" disabled />
+            <span id="multiplierValue">1.0x</span>
+          </div>
+
+          <div class="warning-box" id="warningBox" hidden></div>
+
+          <div class="macro-section" aria-label="宏量营养素">
+            <div class="macro-row">
+              <span>蛋白质</span>
+              <div class="macro-track"><div class="macro-fill protein" id="proteinBar"></div></div>
+              <strong id="proteinValue">--</strong>
+            </div>
+            <div class="macro-row">
+              <span>碳水</span>
+              <div class="macro-track"><div class="macro-fill carbs" id="carbsBar"></div></div>
+              <strong id="carbsValue">--</strong>
+            </div>
+            <div class="macro-row">
+              <span>脂肪</span>
+              <div class="macro-track"><div class="macro-fill fat" id="fatBar"></div></div>
+              <strong id="fatValue">--</strong>
+            </div>
+          </div>
+
+          <div class="detail-block">
+            <h3>食物拆分</h3>
+            <div class="items-list" id="itemsList">
+              <p class="empty-copy">分析后会显示每个食物项的份量和热量。</p>
+            </div>
+          </div>
+
+          <div class="detail-block">
+            <h3>估算依据</h3>
+            <p id="portionSummary" class="body-copy">暂无。</p>
+            <ul id="assumptionsList" class="plain-list"></ul>
+          </div>
+        </section>
+      </section>
+
+      <section class="history-section" aria-labelledby="historyTitle">
+        <div class="section-heading compact">
+          <div>
+            <p class="eyebrow">本机记录</p>
+            <h2 id="historyTitle">最近分析</h2>
+          </div>
+          <button class="ghost-button" id="clearHistoryButton" type="button">
+            <i data-lucide="trash-2"></i>
+            清空
+          </button>
+        </div>
+        <div class="history-list" id="historyList">
+          <p class="empty-copy">还没有分析记录。</p>
+        </div>
+      </section>
+    </main>
+
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
